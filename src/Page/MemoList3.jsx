@@ -12,21 +12,37 @@ export default function MemoList3() {
   const [newPriority, setNewPriority] = useState("MEDIUM"); // 🟢 추가
   const [newCategory, setNewCategory] = useState("GENERAL"); // 🟢 추가
 
-  // ✅ 로컬스토리지 불러오기
+  // ✅ 로컬스토리지 불러오기 (Chat.jsx 방식으로 안전하게 처리)
   useEffect(() => {
     try {
+      // 채팅 메시지에서 메모 추출
       const chatStored = localStorage.getItem("chatMessages");
       let chatMemos = [];
       if (chatStored) {
         const chatMessages = JSON.parse(chatStored);
-        chatMemos = extractMemosFromChat(chatMessages);
+        // 배열인지 확인하고 안전하게 처리
+        if (Array.isArray(chatMessages)) {
+          chatMemos = extractMemosFromChat(chatMessages);
+        } else {
+          console.warn("chatMessages가 배열이 아닙니다:", chatMessages);
+        }
       }
 
+      // 수정된 메모들 불러오기
       const memosStored = localStorage.getItem("memos");
       let modifiedMemos = [];
       if (memosStored) {
-        modifiedMemos = JSON.parse(memosStored);
+        const parsed = JSON.parse(memosStored);
+        // 배열인지 확인하고 안전하게 처리
+        if (Array.isArray(parsed)) {
+          modifiedMemos = parsed;
+        } else {
+          console.warn("memos가 배열이 아닙니다:", parsed);
+        }
       }
+
+      console.log("📋 로딩된 채팅 메모:", chatMemos.length, "개");
+      console.log("📋 로딩된 수정 메모:", modifiedMemos.length, "개");
 
       const allMemos = [...chatMemos];
       modifiedMemos.forEach((modifiedMemo) => {
@@ -47,17 +63,31 @@ export default function MemoList3() {
         }
       });
 
+      console.log("📋 최종 메모 개수:", allMemos.length);
       setMemos(allMemos);
     } catch (error) {
-      console.error("메모 데이터 로딩 오류:", error);
+      console.error("❌ 메모 데이터 로딩 오류:", error);
       setMemos([]);
     }
   }, []);
 
-  // ✅ AI 응답에서 메모 추출
+  // ✅ AI 응답에서 메모 추출 (안전한 처리)
   function extractMemosFromChat(chatMessages) {
     const memos = [];
+    
+    // chatMessages가 배열인지 확인
+    if (!Array.isArray(chatMessages)) {
+      console.warn("chatMessages가 배열이 아닙니다:", chatMessages);
+      return memos;
+    }
+    
     chatMessages.forEach((message, index) => {
+      // message 객체가 유효한지 확인
+      if (!message || typeof message !== 'object') {
+        console.warn(`메시지 ${index}가 유효하지 않습니다:`, message);
+        return;
+      }
+      
       if (message.role === "ai" && message.content) {
         try {
           const aiResponse = JSON.parse(message.content);
@@ -72,12 +102,15 @@ export default function MemoList3() {
               isCompleted: false,
               createdAt: new Date().toISOString().split("T")[0],
             });
+            console.log("📝 AI 메모 추출됨:", aiResponse.content);
           }
         } catch (err) {
           console.log("AI 응답이 JSON 형식이 아닙니다:", err);
         }
       }
     });
+    
+    console.log("📝 추출된 AI 메모 총 개수:", memos.length);
     return memos;
   }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useSelector } from "react-redux";
 import { createSupabaseClient } from "../utils/supabaseClient";
 
@@ -34,14 +34,13 @@ export default function MemoListSupabase2() {
   // ✅ AI 응답에서 메모 추출하는 함수
   function extractMemosFromChatMessages(chatMessages) {
     const memos = [];
+    const seen = new Set(); // content+created_at 키로 자체 중복 제거
     
     chatMessages.forEach((message, index) => {
       if (message.role === "ai" && message.content) {
         try {
-          // JSON 형태의 AI 응답 파싱 시도
           const aiResponse = JSON.parse(message.content);
           if (aiResponse.isMemo === true) {
-            // AI 응답의 category를 Supabase에서 허용하는 값으로 매핑
             const mapCategory = (aiCategory) => {
               const categoryMap = {
                 'TASK': 'WORK',
@@ -55,6 +54,11 @@ export default function MemoListSupabase2() {
               return categoryMap[aiCategory] || 'GENERAL';
             };
 
+            const createdAt = message.created_at || (message.createdAt ? message.createdAt : null);
+            const key = `${aiResponse.content}__${(createdAt || '').slice(0,19)}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+
             memos.push({
               id: `chat-${message.id || index}`,
               title: aiResponse.content,
@@ -63,14 +67,13 @@ export default function MemoListSupabase2() {
               priority: aiResponse.priority || "MEDIUM",
               category: mapCategory(aiResponse.category) || "GENERAL",
               is_completed: false,
-              created_at: message.created_at,
+              created_at: createdAt,
               source: "chat_message",
               chat_message_id: message.id
             });
           }
         } catch (error) {
-          // JSON이 아닌 경우 무시
-          console.log("JSON 파싱 실패 (정상):", message.content.substring(0, 50));
+          console.log("JSON 파싱 실패 (정상):", String(message.content).substring(0, 50));
         }
       }
     });
@@ -78,39 +81,71 @@ export default function MemoListSupabase2() {
     return memos;
   }
 
-  // ✅ 채팅 메시지에서 메모 자동 저장 및 불러오기
+  // ✅ 자동 동기화: 채팅 메시지 → memos 테이블 저장 후 목록 불러오기 (중복 방지)
+  const syncGuardRef = useRef({ running: false, lastKey: null });
+
   useEffect(() => {
     if (!token || !userId) {
       console.log("❌ 토큰 또는 userId가 없어서 메모를 불러올 수 없습니다.");
       return;
     }
-    
-    async function fetchAndSaveMemos() {
+
+    async function syncMemosFromChat() {
       try {
-        console.log("🚀 채팅 메시지에서 메모 자동 저장 시작...");
-        
-        // 1. 채팅 메시지 불러오기
+        const guardKey = `${userId}:${token?.slice(-8) || ''}`;
+        if (syncGuardRef.current.running && syncGuardRef.current.lastKey === guardKey) {
+          console.log("⏭️ 동기화 중복 실행 방지");
+          return;
+        }
+        syncGuardRef.current.running = true;
+        syncGuardRef.current.lastKey = guardKey;
+
+        // 개발 환경 StrictMode에서 2회 호출 방지용 소프트 락 (3초)
+        const now = Date.now();
+        const last = Number(localStorage.getItem("memo_sync_last_ts") || 0);
+        if (now - last < 3000) {
+          console.log("⏭️ 최근 동기화로 인해 스킵");
+          syncGuardRef.current.running = false;
+          return;
+        }
+        localStorage.setItem("memo_sync_last_ts", String(now));
+
+        console.log("🚀 채팅→메모 자동 동기화 시작...");
+
+        // 1) 채팅 메시지 불러오기
         const chatResponse = await supabaseClient.get("/chat_messages", {
           params: {
             select: "*",
             user_id: `eq.${userId}`,
             role: `eq.ai`,
-            order: "created_at.desc",
+            order: "created_at.asc", // 오래된 것부터 처리해 중복 판정 안정화
           },
         });
-        
-        console.log("💬 채팅 메시지:", chatResponse.data);
-        
-        // 2. AI 응답에서 메모 추출
-        const extractedMemos = extractMemosFromChatMessages(chatResponse.data || []);
-        console.log("📝 추출된 메모:", extractedMemos);
-        
-        // 3. 추출된 메모들을 자동으로 memos 테이블에 저장
-        for (const chatMemo of extractedMemos) {
-          await saveChatMemoToDatabase(chatMemo);
+
+        const chatMessages = Array.isArray(chatResponse.data) ? chatResponse.data : [];
+        const extractedMemos = extractMemosFromChatMessages(chatMessages);
+
+        // 2) 기존 memos 로드하여 중복 판단 세트 구성 (content+created_at)
+        const existingRes = await supabaseClient.get("/memos", {
+          params: {
+            select: "id, content, created_at",
+            user_id: `eq.${userId}`,
+          },
+        });
+        const existing = Array.isArray(existingRes.data) ? existingRes.data : [];
+        const existingKeySet = new Set(
+          existing.map((m) => `${m.content}__${m.created_at?.slice(0,19)}`)
+        );
+
+        // 3) 신규만 일괄 저장
+        for (const memo of extractedMemos) {
+          const createdKey = `${memo.content}__${(memo.created_at || "").slice(0,19)}`;
+          if (existingKeySet.has(createdKey)) continue;
+          await saveChatMemoToDatabase(memo);
+          existingKeySet.add(createdKey);
         }
-        
-        // 4. memos 테이블에서 모든 메모 불러오기
+
+        // 4) 최신 목록 불러오기
         const memosResponse = await supabaseClient.get("/memos", {
           params: {
             select: "*",
@@ -118,35 +153,82 @@ export default function MemoListSupabase2() {
             order: "created_at.desc",
           },
         });
-        
-        console.log("📋 최종 메모 목록:", memosResponse.data);
         setMemos(memosResponse.data || []);
-        
+        console.log("✅ 자동 동기화 완료");
       } catch (error) {
-        console.error("❌ 메모 자동 저장 오류:", error);
+        console.error("❌ 자동 동기화 오류:", error);
         console.error("❌ 오류 상세:", error.response?.data);
+      } finally {
+        syncGuardRef.current.running = false;
       }
     }
-    
-    fetchAndSaveMemos();
+
+    syncMemosFromChat();
   }, [token, userId]);
 
-  // ✅ 채팅 메모를 memos 테이블에 저장
+  // ✅ 채팅 메시지에서 메모 자동 저장 (별도 함수로 분리)
+  async function saveChatMemosFromMessages() {
+    if (!token || !userId) return;
+    
+    try {
+      console.log("🚀 채팅 메시지에서 메모 자동 저장 시작...");
+      
+      // 1. 채팅 메시지 불러오기
+      const chatResponse = await supabaseClient.get("/chat_messages", {
+        params: {
+          select: "*",
+          user_id: `eq.${userId}`,
+          role: `eq.ai`,
+          order: "created_at.desc",
+        },
+      });
+      
+      console.log("💬 채팅 메시지:", chatResponse.data?.length || 0, "개");
+      
+      // 2. AI 응답에서 메모 추출
+      const extractedMemos = extractMemosFromChatMessages(chatResponse.data || []);
+      console.log("📝 추출된 메모:", extractedMemos.length, "개");
+      
+      // 3. 추출된 메모들을 자동으로 memos 테이블에 저장 (중복 체크 포함)
+      for (const chatMemo of extractedMemos) {
+        await saveChatMemoToDatabase(chatMemo);
+      }
+      
+      // 4. 저장 후 메모 목록 새로고침
+      const memosResponse = await supabaseClient.get("/memos", {
+        params: {
+          select: "*",
+          user_id: `eq.${userId}`,
+          order: "created_at.desc",
+        },
+      });
+      
+      setMemos(memosResponse.data || []);
+      console.log("✅ 채팅 메모 자동 저장 완료");
+      
+    } catch (error) {
+      console.error("❌ 채팅 메모 자동 저장 오류:", error);
+    }
+  }
+
+  // ✅ 채팅 메모를 memos 테이블에 저장 (중복 방지 강화)
   async function saveChatMemoToDatabase(chatMemo) {
     if (!userId) return;
     
     try {
-      // 중복 체크
-      const checkResponse = await supabaseClient.get("/memos", {
-        params: {
-          select: "id",
-          user_id: `eq.${userId}`,
-          content: `eq.${chatMemo.content}`,
-        },
-      });
+      // 중복 체크 (content + created_at)
+      const params = {
+        select: "id, content, created_at",
+        user_id: `eq.${userId}`,
+        content: `eq.${chatMemo.content}`,
+      };
+      if (chatMemo.created_at) {
+        params.created_at = `eq.${chatMemo.created_at}`;
+      }
+      const checkResponse = await supabaseClient.get("/memos", { params });
       
       if (checkResponse.data && checkResponse.data.length > 0) {
-        console.log("⚠️ 이미 저장된 메모입니다.");
+        console.log("⚠️ 이미 저장된 메모입니다:", chatMemo.content);
         return;
       }
 
@@ -329,6 +411,7 @@ export default function MemoListSupabase2() {
     <div className="p-6">
       <h2 className="text-2xl font-bold mb-4">📝 Supabase 메모 관리</h2>
       
+      {/* 자동 동기화로 전환됨 */}
 
       {/* 새 메모 입력 */}
       <div className="flex flex-col md:flex-row gap-2 mb-6">
