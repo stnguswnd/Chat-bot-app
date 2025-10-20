@@ -94,19 +94,9 @@ const logout = createAsyncThunk(
 
 // 비동기 처리 3개의 상태: 대기, 성공, 실패(거절)
 
-// localStorage에서 토큰 복원
-const getInitialToken = () => {
-  try {
-    return localStorage.getItem("authToken");
-  } catch (error) {
-    console.error("토큰 복원 실패:", error);
-    return null;
-  }
-};
-
 // 초기 상태
 const initialState = {
-  token: getInitialToken(), // localStorage에서 토큰 복원
+  token: null, // Redux Persist가 자동으로 관리
   error: null, // 에러 여부 관리 상태
   isSignup: false, // 회원가입 성공 여부 관리 상태
 };
@@ -142,13 +132,7 @@ const authSlice = createSlice({
         const token = action.payload["access_token"];
         state.token = token;
         state.error = null; // 성공 시 에러 초기화
-        
-        // localStorage에 토큰 저장
-        try {
-          localStorage.setItem("authToken", token);
-        } catch (error) {
-          console.error("토큰 저장 실패:", error);
-        }
+        // Redux Persist가 자동으로 localStorage에 저장
       })
       .addCase(login.rejected, (state, action) => {
         // 로그인 실패 시 에러 저장
@@ -159,25 +143,13 @@ const authSlice = createSlice({
         //로그아웃 비동기 처리가 성공한 상태
         //token 상태 초기화
         state.token = null;
-        
-          // localStorage에서 토큰 제거
-          try {
-            localStorage.removeItem("authToken");
-        } catch (error) {
-          console.error("토큰 제거 실패:", error);
-        }
+        // Redux Persist가 자동으로 localStorage에서 제거
       })
       .addCase(logout.rejected, (state) => {
         // 로그아웃 API 실패해도 로컬 로그아웃 처리
         console.warn("Supabase 로그아웃 API 실패, 로컬 로그아웃 처리");
         state.token = null;
-        
-        // localStorage에서 토큰 제거
-        try {
-          localStorage.removeItem("authToken");
-        } catch (error) {
-          console.error("토큰 제거 실패:", error);
-        }
+        // Redux Persist가 자동으로 localStorage에서 제거
       });
   },
 });

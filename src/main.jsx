@@ -6,10 +6,16 @@ import { Provider } from "react-redux";
 import { store } from "./store";
 import router from "./router";
 
+// Redux Persist 관련 모듈 불러오기
+import { PersistGate } from "redux-persist/integration/react";
+import { persistor } from "./store";
+
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <Provider store={store}>
-      <RouterProvider router={router} />
+      <PersistGate loading={null} persistor={persistor}>
+        <RouterProvider router={router} />
+      </PersistGate>
     </Provider>
   </StrictMode>
 );
