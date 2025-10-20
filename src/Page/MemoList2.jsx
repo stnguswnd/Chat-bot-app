@@ -31,6 +31,25 @@ export default function MemoListSupabase2() {
 
   const userId = token ? getUserIdFromToken(token) : null;
 
+  // ✅ 삭제된 메모 키 관리 함수들
+  function getDeletedMemoKeys() {
+    try {
+      const stored = localStorage.getItem("deleted_memo_keys");
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch (error) {
+      console.error("삭제된 메모 키 로딩 오류:", error);
+      return new Set();
+    }
+  }
+
+  function saveDeletedMemoKeys(deletedKeys) {
+    try {
+      localStorage.setItem("deleted_memo_keys", JSON.stringify([...deletedKeys]));
+    } catch (error) {
+      console.error("삭제된 메모 키 저장 오류:", error);
+    }
+  }
+
   // ✅ AI 응답에서 메모 추출하는 함수
   function extractMemosFromChatMessages(chatMessages) {
     const memos = [];
@@ -85,8 +104,11 @@ export default function MemoListSupabase2() {
   const syncGuardRef = useRef({ running: false, lastKey: null });
 
   useEffect(() => {
+    console.log("🔍 useEffect 실행 - token:", !!token, "userId:", userId);
     if (!token || !userId) {
       console.log("❌ 토큰 또는 userId가 없어서 메모를 불러올 수 없습니다.");
+      console.log("token:", token ? "존재" : "없음");
+      console.log("userId:", userId);
       return;
     }
 
@@ -111,8 +133,10 @@ export default function MemoListSupabase2() {
         localStorage.setItem("memo_sync_last_ts", String(now));
 
         console.log("🚀 채팅→메모 자동 동기화 시작...");
+        console.log("🔧 supabaseClient:", !!supabaseClient);
 
         // 1) 채팅 메시지 불러오기
+        console.log("📡 채팅 메시지 조회 시작...");
         const chatResponse = await supabaseClient.get("/chat_messages", {
           params: {
             select: "*",
@@ -123,7 +147,14 @@ export default function MemoListSupabase2() {
         });
 
         const chatMessages = Array.isArray(chatResponse.data) ? chatResponse.data : [];
-        const extractedMemos = extractMemosFromChatMessages(chatMessages);
+        let extractedMemos = extractMemosFromChatMessages(chatMessages);
+
+        // 삭제된 키는 스킵 (content+created_at 기반 키)
+        const deletedKeys = getDeletedMemoKeys();
+        extractedMemos = extractedMemos.filter((m) => {
+          const key = `${m.content}__${(m.created_at || "").slice(0,19)}`;
+          return !deletedKeys.has(key);
+        });
 
         // 2) 기존 memos 로드하여 중복 판단 세트 구성 (content+created_at)
         const existingRes = await supabaseClient.get("/memos", {
@@ -309,10 +340,16 @@ export default function MemoListSupabase2() {
     }
   }
 
-  // ✅ 완료 상태 토글
+  // ✅ 완료 상태 토글 (올바른 Supabase API 방식)
   async function toggleComplete(id, current) {
+    if (!userId) {
+      console.error("❌ 사용자 ID가 없어서 상태를 변경할 수 없습니다.");
+      return;
+    }
+    
     try {
-      await supabaseClient.patch(`/memos?id=eq.${id}`, {
+      console.log("🔄 완료 상태 변경:", id, "사용자:", userId);
+      await supabaseClient.patch(`/memos?id=eq.${id}&user_id=eq.${userId}`, {
         is_completed: !current,
       });
       setMemos((prev) =>
@@ -321,16 +358,22 @@ export default function MemoListSupabase2() {
         )
       );
     } catch (err) {
-      console.error("완료 상태 변경 오류:", err);
-      console.error("오류 상세:", err.response?.data);
+      console.error("❌ 완료 상태 변경 오류:", err);
+      console.error("❌ 오류 상세:", err.response?.data);
     }
   }
 
-  // ✅ 수정 저장
+  // ✅ 수정 저장 (올바른 Supabase API 방식)
   async function saveEdit(id) {
     if (editText.trim() === "") return;
+    if (!userId) {
+      console.error("❌ 사용자 ID가 없어서 수정할 수 없습니다.");
+      return;
+    }
+    
     try {
-      await supabaseClient.patch(`/memos?id=eq.${id}`, {
+      console.log("✏️ 메모 수정:", id, "사용자:", userId);
+      await supabaseClient.patch(`/memos?id=eq.${id}&user_id=eq.${userId}`, {
         title: editText,
         content: editText,
       });
@@ -342,19 +385,64 @@ export default function MemoListSupabase2() {
       setEditId(null);
       setEditText("");
     } catch (err) {
-      console.error("수정 오류:", err);
-      console.error("오류 상세:", err.response?.data);
+      console.error("❌ 수정 오류:", err);
+      console.error("❌ 오류 상세:", err.response?.data);
     }
   }
 
-  // ✅ 삭제
+  // ✅ 삭제 (올바른 Supabase API 방식)
   async function deleteMemo(id) {
+    if (!userId) {
+      console.error("❌ 사용자 ID가 없어서 삭제할 수 없습니다.");
+      return;
+    }
+    
     try {
-      await supabaseClient.delete(`/memos?id=eq.${id}`);
-      setMemos((prev) => prev.filter((m) => m.id !== id));
+      console.log("🗑️ 메모 삭제 시작:", id, "사용자:", userId);
+      // 삭제 전에 대상 메모 정보 확보 (chat_messages 동시 삭제와 tombstone 저장을 위해)
+      let targetMemoForDeletion = null;
+      setMemos((prev) => {
+        targetMemoForDeletion = prev.find((m) => m.id === id) || null;
+        return prev;
+      });
+
+      // 1) memos 테이블에서 삭제
+      await supabaseClient.delete(`/memos?id=eq.${id}&user_id=eq.${userId}`);
+      console.log("✅ 메모 삭제 완료:", id);
+
+      // 2) 관련 chat_messages 함께 삭제 시도 (content + created_at 기준, role=ai)
+      try {
+        if (targetMemoForDeletion) {
+          const content = targetMemoForDeletion.content;
+          const createdAt = targetMemoForDeletion.created_at;
+          let chatDeletePath = `/chat_messages?user_id=eq.${userId}&role=eq.ai`;
+          if (content) {
+            chatDeletePath += `&content=eq.${encodeURIComponent(content)}`;
+          }
+          if (createdAt) {
+            chatDeletePath += `&created_at=eq.${createdAt}`;
+          }
+          await supabaseClient.delete(chatDeletePath);
+          console.log("🗑️ 관련 chat_messages 삭제 시도 성공");
+        }
+      } catch (chatErr) {
+        console.warn("⚠️ chat_messages 삭제 중 오류(무시 가능):", chatErr?.response?.data || chatErr?.message);
+      }
+
+      // 3) tombstone 저장: 채팅에서 동일 메모가 다시 생성되는 것을 방지
+      setMemos((prev) => {
+        const target = targetMemoForDeletion || prev.find((m) => m.id === id);
+        if (target) {
+          const key = `${target.content}__${(target.created_at || "").slice(0,19)}`;
+          const deleted = getDeletedMemoKeys();
+          deleted.add(key);
+          saveDeletedMemoKeys(deleted);
+        }
+        return prev.filter((m) => m.id !== id);
+      });
     } catch (err) {
-      console.error("삭제 오류:", err);
-      console.error("오류 상세:", err.response?.data);
+      console.error("❌ 삭제 오류:", err);
+      console.error("❌ 오류 상세:", err.response?.data);
     }
   }
 

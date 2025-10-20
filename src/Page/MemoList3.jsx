@@ -12,6 +12,33 @@ export default function MemoList3() {
   const [newPriority, setNewPriority] = useState("MEDIUM"); // 🟢 추가
   const [newCategory, setNewCategory] = useState("GENERAL"); // 🟢 추가
 
+  // ✅ 간단 해시 (채팅 메모 ID 안정화)
+  function simpleHash(str) {
+    if (!str) return "0";
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash << 5) - hash + str.charCodeAt(i);
+      hash |= 0; // 32bit 정수
+    }
+    return Math.abs(hash).toString(36);
+  }
+
+  // ✅ 삭제된 메모 ID 영속화 유틸
+  function getDeletedIds() {
+    try {
+      const raw = localStorage.getItem("deletedMemoIds");
+      const arr = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+
+  function saveDeletedIds(idsSet) {
+    const arr = Array.from(idsSet);
+    localStorage.setItem("deletedMemoIds", JSON.stringify(arr));
+  }
+
   // ✅ 로컬스토리지 불러오기 (Chat.jsx 방식으로 안전하게 처리)
   useEffect(() => {
     try {
@@ -41,11 +68,17 @@ export default function MemoList3() {
         }
       }
 
+      // 삭제된 ID는 필터링
+      const deletedIds = getDeletedIds();
+
+      chatMemos = chatMemos.filter((m) => !deletedIds.has(m.id));
+
       console.log("📋 로딩된 채팅 메모:", chatMemos.length, "개");
       console.log("📋 로딩된 수정 메모:", modifiedMemos.length, "개");
 
       const allMemos = [...chatMemos];
       modifiedMemos.forEach((modifiedMemo) => {
+        if (deletedIds.has(modifiedMemo.id)) return; // 삭제된 것은 스킵
         const existingIndex = allMemos.findIndex(
           (memo) => memo.id === modifiedMemo.id
         );
@@ -71,7 +104,7 @@ export default function MemoList3() {
     }
   }, []);
 
-  // ✅ AI 응답에서 메모 추출 (안전한 처리)
+  // ✅ AI 응답에서 메모 추출 (안전 + 안정 ID)
   function extractMemosFromChat(chatMessages) {
     const memos = [];
     
@@ -92,8 +125,9 @@ export default function MemoList3() {
         try {
           const aiResponse = JSON.parse(message.content);
           if (aiResponse.isMemo && aiResponse.content) {
+            const stableId = `chat-${simpleHash(aiResponse.content)}`;
             memos.push({
-              id: `chat-${index}`,
+              id: stableId,
               title: aiResponse.content,
               content: aiResponse.content,
               dueDate: aiResponse.dueDate || null,
@@ -151,9 +185,13 @@ export default function MemoList3() {
     updateLocalStorage(updated);
   }
 
-  // ✅ 삭제
+  // ✅ 삭제 (영속화: 삭제 ID 저장)
   function deleteMemo(id) {
     const updated = memos.filter((memo) => memo.id !== id);
+    // 삭제 ID 저장
+    const deleted = getDeletedIds();
+    deleted.add(id);
+    saveDeletedIds(deleted);
     updateLocalStorage(updated);
   }
 
