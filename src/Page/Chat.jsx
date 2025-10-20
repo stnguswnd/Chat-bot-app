@@ -6,8 +6,18 @@ import { chat, config } from "../utils/genai";
 export default function Chat() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState(() => {
-    const stored = localStorage.getItem("chatMessages");
-    return stored ? JSON.parse(stored) : [];
+    try {
+      const stored = localStorage.getItem("chatMessages");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        // 배열인지 확인하고, 배열이 아니면 빈 배열로 초기화
+        return Array.isArray(parsed) ? parsed : [];
+      }
+      return [];
+    } catch (error) {
+      console.error("localStorage에서 메시지 로드 실패:", error);
+      return [];
+    }
   });
   const [isLoading, setIsLoading] = useState(false);
 
