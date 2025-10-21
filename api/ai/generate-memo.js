@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
 // VITE 접두사가 붙지 않는다. (Vercel 환경 변수)
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_KEY = process.env.VITE_GEMINI_API_KEY;
 
 // API 키 로딩 상태 확인 로그 (보안 고려)
 console.log("=== API 키 로딩 상태 확인 ===");
